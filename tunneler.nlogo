@@ -30,20 +30,19 @@ globals [
   spell-dexterity ;increased attackroll & armor
 
   ;level 5 spells
-  ;sanctuary - mobs unable to hit hero for a short duration.  If hero attacks, the sanctuary goes away
-  ;drain life - hp moves from mob to hero
-  ;walk through walls - able to walk through walls for a short duration.  If spells fades while in a wall, the hero dies
+  spell-sanctuary ;mobs unable to hit hero for a short duration.  If hero attacks, the sanctuary goes away
+  spell-drain-life ;hp moves from mob to hero
+  spell-walk-through-walls ;able to walk through walls for a short duration.  If spells fades while in a wall, the hero dies
 
   ;level 6 spells
-  ;fireball - similar to smoke screen, except causes damage
-  ;sleep - similar to smoke screen, but puts mobs to sleep
-  ;teleport - jump to another location on a random level
+  spell-fireball ;similar to smoke screen, except causes damage
+  spell-sleep ;puts all the mobs on the level to sleep for a few ticks
+  spell-teleport ;jump to another location
 
   ;level 7 spells
-  ;sphere of annihilation - creates a globe that moves in a cardinal direction X number of spaces, killing mobs and destroying walls, chests, items, gold and anything else (including ladders!)
-  ;animate dead - creates a zombie that follows hero around and attacks mobs
-  ;create-item - use "drop item" procedure to create a random item
-
+  spell-sphere-of-annihilation ;creates a globe that moves in a cardinal direction X number of spaces, killing mobs and destroying walls, chests, items, gold and anything else (including ladders!)
+  spell-animate-dead ;creates a zombie that follows hero around and attacks mobs
+  spell-create-item ;use "drop item" procedure to create a random item
 
 ]
 
@@ -59,6 +58,8 @@ breed [spellbooks spellbook]
 breed [torches torch]
 breed [treasure-chests treasure-chest]
 
+directed-link-breed [drain-life-vectors drain-life-vector]
+
 treasure-chests-own [
   trapped?
 ]
@@ -71,7 +72,6 @@ torches-own [
 spellbooks-own [
   spell-level ;the level of spell that's in the book
 ]
-
 
 projectiles-own [
   projectile-damage
@@ -104,6 +104,7 @@ buildings-own [
 patches-own [
   walkable?
   smoke-screen-timer
+  fireball-timer
   discovered?
   trap-door?
   boobytrap?
@@ -125,13 +126,14 @@ heros-own [
   magic-protection
   magic-dexterity
   magic-sense-danger
+  magic-sanctuary
+  magic-walk-through-walls
   armor-value
   armor-name
   magic-fire
   in-hand
   ranged-weapon
 ]
-
 
 mobs-own [
   mob-name
@@ -141,17 +143,240 @@ mobs-own [
   damage
   armor-value
   mob-speed
+  sleep-timer ;used by the sleep spell
+  mob-color ; used to store color value to return to after sleep spell
+  master ; used to determine if the mob is under the control of another (either the hero or another mob)
   magic-fire
   magic-strength
   magic-protection
   magic-dexterity
   magic-walk-thru-walls
+  magic-sanctuary
   xp
 ]
 
 treasures-own [
   coins
 ]
+
+to cast-sphere-of-annihilation
+
+  ;creates a sphere that destroys everything in it's path
+
+  let sphere-direction user-one-of "Which direction:" [
+    "Closest Monster"
+    "North"
+    "South"
+    "East"
+    "West"
+  ]
+
+  ask one-of heros [
+    hatch-projectiles 1 [
+      set shape "circle 2"
+      set color red
+      print (word "A sphere of annihilation forms in front of you.")
+
+      if sphere-direction = "Closest Monster" [
+        set heading towards min-one-of mobs [distance myself]
+      ]
+
+      if sphere-direction = "North" [set heading 0]
+      if sphere-direction = "South" [set heading 180]
+      if sphere-direction = "East" [set heading 90]
+      if sphere-direction = "West" [set heading 270]
+
+      wait 0.2
+    ]
+    set mana mana - 7
+
+    ;move projectile and attack roll
+    ask one-of projectiles with [shape = "circle 2"] [
+      repeat [xp-level + 1] of one-of heros [
+        ask other turtles-here with [breed != heros] [die]
+
+        ask patch-here [
+          set pcolor black
+          set walkable? true
+          set smoke-screen-timer 0
+          set fireball-timer 0
+        ]
+        wait 0.3
+        if (can-move? 1) and [pycor < 15] of patch-ahead 1 [
+          fd 1
+          repeat 25 [
+            set color random 140
+            wait 0.04
+          ]
+        ]
+      ]
+      die
+    ]
+  ]
+end
+
+to cast-animate-dead
+
+  ; creates a zombie and assigns it's "master" variable to the hero
+  create-mobs 1 [
+    set mob-name "zombie"
+    set hp 0
+    repeat level [set hp hp + random 16 + 1]
+    set max-hp hp
+    set heal-rate 1
+    set armor-value random 35 + 1
+    set shape "boss"
+    set damage 0
+    set damage damage + random 8 + 1
+    set mob-speed 1
+    set xp ((hp + armor-value) * damage)
+    set color 43 ; some kind of ghoulish yellow
+    set mob-color color
+    set master one-of heros
+    setxy [xcor] of one-of heros [ycor] of one-of heros
+
+    if (can-move? 1) and
+    (not any? other mobs-on patch-ahead 1) and
+    (not any? heros-on patch-ahead 1) and
+    ([walkable? = true] of patch-ahead 1 or [magic-walk-thru-walls] of self = 1) and
+    ([fireball-timer <= ticks] of patch-ahead 1) and
+    [pycor < 15] of patch-ahead 1 [
+      fd 1
+    ]
+
+  ]
+
+  ask one-of heros [
+    set mana mana - 7
+  ]
+
+
+end
+
+to cast-create-item
+
+
+  ; creates a random item of the highest caliber
+  ask heros [
+    ask one-of neighbors with [walkable? = true] [drop-item self 99]
+    set mana mana - 7
+  ]
+
+end
+
+to cast-fireball
+
+  ;creates an area that is on fire for a short period of time.  Any mob in the affected area takes damage so long as the patch is on fire
+
+  let fireball-radius [xp-level] of one-of heros
+  if fireball-radius > 5 [set fireball-radius 5] ;cap radius at 5
+  ask one-of heros [
+    ask patches with [walkable? = true] in-radius fireball-radius [
+      set fireball-timer ticks + random ([xp-level] of one-of heros * 10) + 5
+    ]
+    ask patch-here [set fireball-timer 0]
+    ask heros [set mana mana - 6]
+  ]
+
+  update-display
+
+end
+
+to cast-sleep
+
+  ;need to add functionality
+  ask mobs [
+    set sleep-timer (ticks + (random [xp-level] of one-of heros * 4) + [xp-level] of one-of heros)
+  ]
+
+end
+
+to cast-teleport
+
+  ;Teleports hero to some random spot on the level
+
+  let valid-landing-spot false
+  while [valid-landing-spot = false] [
+    ask one-of heros [
+      setxy round random-xcor round random-ycor
+      if ([walkable? = true] of patch-here or magic-walk-through-walls > 0) and [pycor < 15] of patch-here and not any? other turtles-here [set valid-landing-spot true]
+    ]
+  ]
+
+end
+
+to cast-walk-through-walls
+
+  ;Enchantment that allows hero walk through walls.  If the enchantment wears off when the hero is in a wall, the hero dies!
+  ask one-of heros [
+    set magic-walk-through-walls (random (xp-level * 2)) + 10
+    set mana mana - 6
+    print (word "You feel light and ethereal.")
+  ]
+
+
+end
+
+to cast-drain-life
+
+  ;this spell steals the mobs hp and adds to the hero's total.  If the hero's total exceeds max-hp, then it gradually lowers to the max-hp value
+  ask one-of heros [
+    hatch-projectiles 1 [
+      set shape "drop"
+      set color green
+      set projectile-damage 0
+      set heading towards min-one-of mobs [distance myself]
+    ]
+    set mana mana - 5
+
+    ;move projectile and attack roll
+    ask one-of projectiles with [shape = "drop"] [
+      wait 0.4
+      set size 2
+      repeat [xp-level] of myself [
+        wait 0.4
+        ifelse any? mobs-on patch-ahead 1 [
+
+          ;drain life
+          set projectile-damage [hp] of one-of mobs-on patch-ahead 1
+          print (word "You drain **" projectile-damage "** hp worth of life force out of your enemy and feel invigorated!")
+          ask one-of heros [
+            set hp hp + [projectile-damage] of myself
+            set label (word "+" [projectile-damage] of myself)
+          ]
+
+          ;turn them yucky green
+          ask one-of mobs-on patch-ahead 1 [
+            create-drain-life-vector-to one-of heros
+            ask drain-life-vectors [
+              set color green
+              set thickness 0.25
+            ]
+            set hp 0
+            set color green
+            wait 0.5
+            check-for-death
+            ask drain-life-vectors [die]
+          ]
+          die
+        ][
+          fd 1
+        ]
+      ]
+      die
+    ]
+
+    ask one-of heros [set label ""]
+  ]
+end
+
+to cast-sanctuary
+  ask one-of heros [
+    set magic-sanctuary (random (xp-level * 3)) + 10
+    set mana mana - 5
+    print (word "You feel the armor of God upon you.")
+  ]
+end
 
 to cast-light
 
@@ -170,7 +395,6 @@ to cast-light
   update-display
 
 end
-
 
 to cast-heal
   let heal-amount 0
@@ -352,8 +576,6 @@ to cast-dexterity
   ]
 end
 
-
-
 to cast-spell
   let this-spell-level 0
   let spell-to-be-cast user-input "Cast your spell hero:"
@@ -374,6 +596,18 @@ to cast-spell
   if spell-to-be-cast = "bolt" [set this-spell-level 4]
   if spell-to-be-cast = "mfir" [set this-spell-level 4]
   if spell-to-be-cast = "dex" [set this-spell-level 4]
+
+  if spell-to-be-cast = "snc" [set this-spell-level 5]
+  if spell-to-be-cast = "drn" [set this-spell-level 5]
+  if spell-to-be-cast = "wlk" [set this-spell-level 5]
+
+  if spell-to-be-cast = "fbl" [set this-spell-level 6]
+  if spell-to-be-cast = "slp" [set this-spell-level 6]
+  if spell-to-be-cast = "tel" [set this-spell-level 6]
+
+  if spell-to-be-cast = "xxx" [set this-spell-level 7]
+  if spell-to-be-cast = "ded" [set this-spell-level 7]
+  if spell-to-be-cast = "create" [set this-spell-level 7]
 
   ask one-of heros [
     if mana < this-spell-level [
@@ -401,12 +635,20 @@ to cast-spell
     if spell-to-be-cast = "bolt" and spell-lightning-bolt = 1 [cast-lightning-bolt]
     if spell-to-be-cast = "mfir" and spell-magic-fire = 1 [cast-magic-fire]
     if spell-to-be-cast = "dex" and spell-dexterity = 1 [cast-dexterity]
+    if spell-to-be-cast = "snc" and spell-sanctuary = 1 [cast-sanctuary]
+    if spell-to-be-cast = "drn" and spell-drain-life = 1 [cast-drain-life]
+    if spell-to-be-cast = "wlk" and spell-walk-through-walls = 1 [cast-walk-through-walls]
+    if spell-to-be-cast = "fbl" and spell-fireball = 1 [cast-fireball]
+    if spell-to-be-cast = "slp" and spell-sleep = 1 [cast-sleep]
+    if spell-to-be-cast = "tel" and spell-teleport = 1 [cast-teleport]
+    if spell-to-be-cast = "xxx" and spell-sphere-of-annihilation = 1 [cast-sphere-of-annihilation]
+    if spell-to-be-cast = "ded" and spell-sleep = 1 [cast-animate-dead]
+    if spell-to-be-cast = "create" and spell-sleep = 1 [cast-create-item]
   ]
 
   move "rest"
 
 end
-
 
 to setup
   clear-all
@@ -514,6 +756,25 @@ to update-display
   if spell-magic-fire = 1 [output-print "[4] mfir - Magic Fire"]
   if spell-dexterity = 1 [output-print "[4] dex - Dexterity"]
 
+  output-print " "
+
+  if spell-sanctuary = 1 [output-print "[5] snc - Sanctuary"]
+  if spell-drain-life = 1 [output-print "[5] drn - Drain Life"]
+  if spell-walk-through-walls = 1 [output-print "[5] wlk - Walk Through Walls"]
+
+  output-print " "
+
+  if spell-fireball = 1 [output-print "[6] fbl - Fireball"]
+  if spell-sleep = 1 [output-print "[6] slp - Sleep"]
+  if spell-teleport = 1 [output-print "[6] tel - Teleport"]
+
+  output-print " "
+
+  if spell-sphere-of-annihilation = 1 [output-print "[7] xxx - Sphere of Annihilation"]
+  if spell-animate-dead = 1 [output-print "[7] ded - Animate Dead"]
+  if spell-create-item = 1 [output-print "[7] create - Create Item"]
+
+
   ;discover patches
   carefully [
     ask one-of heros [
@@ -531,6 +792,11 @@ to update-display
     if smoke-screen-timer > ticks [set pcolor 49]
     if smoke-screen-timer <= ticks and walkable? = true [set pcolor black]
     if smoke-screen-timer <= ticks and walkable? = false [set pcolor grey]
+
+    ;fireball timers get set last.  So, if a patch has smokescreen and fire, it will show fire
+    if fireball-timer > ticks [set pcolor red]
+    if fireball-timer <= ticks and walkable? = true [set pcolor black]
+    if fireball-timer <= ticks and walkable? = false [set pcolor grey]
   ]
 
 
@@ -620,6 +886,27 @@ to update-display
       ]
     ]
 
+    ;sanctuary
+    ask patch 5 15 [
+      ifelse [magic-sanctuary] of one-of heros > 0 [
+        set plabel-color black
+        set plabel (word "Sanctuary: " [magic-sanctuary] of one-of heros)
+      ][
+        set plabel ""
+      ]
+    ]
+
+    ;walk through walls
+    ask patch 8 15 [
+      ifelse [magic-walk-through-walls] of one-of heros > 0 [
+        set plabel-color black
+        set plabel (word "Walk Through Walls: " [magic-walk-through-walls] of one-of heros)
+      ][
+        set plabel ""
+      ]
+    ]
+
+
   ]
 
   ;hide coins and items if a mob is on the same square
@@ -627,7 +914,6 @@ to update-display
     ask treasures-here [
       ifelse any? mobs-here [set hidden? true] [set hidden? false]
     ]
-
     ask weapons-here [
       ifelse any? mobs-here [set hidden? true] [set hidden? false]
     ]
@@ -675,7 +961,6 @@ ask armors with [armor-used = 1] [
 
 end
 
-
 to move [dir]
 
   tick
@@ -695,25 +980,39 @@ to move [dir]
   ask heros [
     ifelse (dir != "rest") and
     (can-move? 1) and
-    [walkable? = true] of patch-ahead 1 and
-    (any? mobs-on patch-ahead 1) [
+    ([walkable? = true] of patch-ahead 1 or magic-walk-through-walls > 0) and ;this line lets heros attack mobs that are floating through walls
+    (any? (mobs-on patch-ahead 1) with [master = 0]) [
 
       ;do battle
-      battle self one-of mobs-on patch-ahead 1 0 0
+      battle self one-of (mobs-on patch-ahead 1) with [master = 0] 0 0
 
     ][
       if (dir != "rest") and
       (can-move? 1) and
-      [walkable? = true] of patch-ahead 1 and
+      ([walkable? = true] of patch-ahead 1 or magic-walk-through-walls > 0) and
       [pycor < 15] of patch-ahead 1 [
         fd 1
         set xcor round xcor
         set ycor round ycor
       ]
     ]
+
+    if [fireball-timer] of patch-here > ticks [
+      let fireball-damage (random (xp-level * 6) + xp-level)
+      set hp hp - fireball-damage
+      ;some cool graphics
+      set size 5
+      set label-color white
+      set label fireball-damage
+      wait 0.5
+      set size 1
+      set label ""
+      check-for-death
+    ]
   ]
 
   if any? heros [wear-gear]
+
   burn-torches
   update-spell-enchantments
 
@@ -738,10 +1037,15 @@ to update-spell-enchantments
     if magic-fire > 0 [set magic-fire magic-fire - 1]
     if magic-dexterity > 0 [set magic-dexterity magic-dexterity - 1]
     if magic-sense-danger > 0 [set magic-sense-danger magic-sense-danger - 1]
+    if magic-sanctuary > 0 [set magic-sanctuary magic-sanctuary - 1]
+
+    if magic-walk-through-walls > 0 [
+      set magic-walk-through-walls magic-walk-through-walls - 1
+      if magic-walk-through-walls = 0 [check-for-death]
+    ]
   ]
 
 end
-
 
 to burn-torches
 
@@ -811,12 +1115,11 @@ to check-for-level-up
 
 end
 
-
 to heal
   if ticks mod 10 = 0 [
     ask turtles with [breed = heros or breed = mobs] [
       if hp < max-hp [set hp hp + heal-rate]
-      if hp > max-hp [set hp max-hp]
+      if hp > max-hp [set hp hp - 1]
     ]
   ]
 
@@ -828,45 +1131,47 @@ to heal
   ]
 end
 
-
 to check-for-death
   let coin-drop 0
   let drop-chance 0
 
   ask one-of heros [
-    if hp <= 0 [
+    if (hp <= 0) or ([walkable? = false] of patch-here and magic-walk-through-walls = 0) [
       user-message ("You have died!")
       die
     ]
   ]
 
   ask mobs with [hp <= 0] [
-    set coin-drop [xp] of self
 
-    print (word "You gain " xp " XP.")
+    ;all the stuff to do if it's a normal monster
+    if master = 0 [
+      set coin-drop [xp] of self
 
-    ask heros [set xp xp + [xp] of myself]
+      print (word "You gain " xp " XP.")
 
-    ask neighbors with [walkable? = true] [
-      set drop-chance random 100 + 1
+      ask heros [set xp xp + [xp] of myself]
 
-      if drop-chance >= 0 and drop-chance <= 20 [
-        sprout-treasures 1 [
-          set coins random coin-drop + 1
-          set color 45
-          set shape "coin"
+      ask neighbors with [walkable? = true] [
+        set drop-chance random 100 + 1
+
+        if drop-chance >= 0 and drop-chance <= 20 [
+          sprout-treasures 1 [
+            set coins random coin-drop + 1
+            set color 45
+            set shape "coin"
+          ]
+        ]
+
+        if drop-chance >= 21 and drop-chance <= 25 [
+          drop-item self level
         ]
       ]
-
-      if drop-chance >= 21 and drop-chance <= 25 [
-        drop-item self
-      ]
-
+      ;visual effects of the mob dying
+      set label (word xp " XP gained!")
     ]
 
-    ;visual effects of the mob dying
-    set label (word xp " XP gained!")
-
+    ;death graphics applicable to all mobs
     let j 1
     facexy 0 0
     repeat 100 [
@@ -875,19 +1180,26 @@ to check-for-death
       wait 0.01
       set j j + 0.05
     ]
-
     die
   ]
 
 end
-
-
 
 to battle [attacker defender attacker-hitroll attacker-damage]
   ;
   ;this procedure executes one round of battle
   ;hitrolls are modifiers to the chance to hit.  Base chance is 50%
   ;
+
+  ;lose sanctuary if attacking
+  if [breed] of attacker != projectiles [
+    ask attacker [
+      if magic-sanctuary > 0 [
+        print "The armor of God fades away as you attack your enemy out of anger."
+        set magic-sanctuary 0
+      ]
+    ]
+  ]
 
   ; check to make sure defender isn't hiding in a wall (ex. ghasts, and other stuff in the future)
   let hitable? false
@@ -925,7 +1237,11 @@ to battle [attacker defender attacker-hitroll attacker-damage]
 
   ;check for a projectile first
   if [breed] of attacker = projectiles [
-    if attack-roll >= 50 and hitable? = true [
+
+    if attack-roll >= 50 and hitable? = true and [magic-sanctuary] of defender = 0 [
+      ;lose sanctuary if attacking
+      if [breed] of attacker != projectiles [ask attacker [set magic-sanctuary 0]]
+
       set battle-damage (random [projectile-damage] of attacker + 1) + attacker-damage
       print (word defender " suffers " battle-damage " points of damage.")
 
@@ -944,7 +1260,7 @@ to battle [attacker defender attacker-hitroll attacker-damage]
   ]
 
   ;reguar melee
-  ifelse attack-roll >= 50 and [breed] of attacker != projectiles and hitable? = true [
+  ifelse attack-roll >= 50 and [breed] of attacker != projectiles and hitable? = true and [magic-sanctuary] of defender = 0 [
     ;attack successful
     set battle-damage random [damage] of attacker + 1
     set battle-damage battle-damage + [magic-strength] of attacker
@@ -980,7 +1296,6 @@ to battle [attacker defender attacker-hitroll attacker-damage]
 
 end
 
-
 to save-level [name]
 
   let filepath (word "tunnelworld-" name ".csv")
@@ -997,6 +1312,8 @@ to load-level [name move-type]
   let temp-magic-protection [magic-protection] of one-of heros
   let temp-magic-dexterity [magic-dexterity] of one-of heros
   let temp-magic-sense-danger [magic-sense-danger] of one-of heros
+  let temp-magic-sanctuary [magic-sanctuary] of one-of heros
+  let temp-magic-walk-through-walls [magic-walk-through-walls] of one-of heros
   let temp-in-hand [in-hand] of one-of heros
   let temp-max-hp [max-hp] of one-of heros
   let temp-mana [mana] of one-of heros
@@ -1034,6 +1351,7 @@ to load-level [name move-type]
   let temp-torch-used 0
   let temp-torch-color 0
 
+  ;capture global values so they can be reloaded
   let temp-spell-magic-missile spell-magic-missile
   let temp-spell-flame-tongue spell-flame-tongue
   let temp-spell-heal spell-heal
@@ -1046,6 +1364,12 @@ to load-level [name move-type]
   let temp-spell-lightning-bolt spell-lightning-bolt
   let temp-spell-magic-fire spell-magic-fire
   let temp-spell-dexterity spell-dexterity
+  let temp-spell-sanctuary spell-sanctuary
+  let temp-spell-drain-life spell-drain-life
+  let temp-spell-walk-through-walls spell-walk-through-walls
+  let temp-spell-fireball spell-fireball
+  let temp-spell-sleep spell-sleep
+  let temp-spell-sphere-of-annihilation spell-sphere-of-annihilation
 
   ;save armor details
   if any? armors with [armor-used = 1] [
@@ -1105,7 +1429,7 @@ to load-level [name move-type]
     create-heros 1 [
       while [valid-landing-spot = false] [
         setxy round random-xcor round random-ycor
-        if [walkable? = true] of patch-here and [pycor < 15] of patch-here and not any? other turtles-here [set valid-landing-spot true]
+        if ([walkable? = true] of patch-here or magic-walk-through-walls > 0) and [pycor < 15] of patch-here and not any? other turtles-here [set valid-landing-spot true]
       ]
         set shape "person"
         set color orange
@@ -1195,7 +1519,7 @@ to load-level [name move-type]
   ]
 
 
-  ;load spells
+  ; reload spells
   set spell-magic-missile temp-spell-magic-missile
   set spell-flame-tongue temp-spell-flame-tongue
   set spell-heal temp-spell-heal
@@ -1208,6 +1532,12 @@ to load-level [name move-type]
   set spell-lightning-bolt temp-spell-lightning-bolt
   set spell-magic-fire temp-spell-magic-fire
   set spell-dexterity temp-spell-dexterity
+  set spell-sanctuary temp-spell-sanctuary
+  set spell-walk-through-walls temp-spell-walk-through-walls
+  set spell-drain-life temp-spell-drain-life
+  set spell-fireball temp-spell-fireball
+  set spell-sleep temp-spell-sleep
+  set spell-sphere-of-annihilation temp-spell-sphere-of-annihilation
 
   update-display
 
@@ -1225,6 +1555,8 @@ to load-level [name move-type]
     set magic-strength temp-magic-strength
     set magic-protection temp-magic-protection
     set magic-dexterity temp-magic-dexterity
+    set magic-sanctuary temp-magic-sanctuary
+    set magic-walk-through-walls temp-magic-walk-through-walls
     set in-hand temp-in-hand
     set max-hp temp-max-hp
     set heal-rate temp-heal-rate
@@ -1248,7 +1580,6 @@ to load-level [name move-type]
 
 end
 
-
 to generate-hero
   create-heros 1 [
     setxy round random-xcor round random-ycor
@@ -1262,6 +1593,8 @@ to generate-hero
     set magic-strength 0
     set magic-protection 0
     set magic-dexterity 0
+    set magic-sanctuary 0
+    set magic-walk-through-walls 0
     set hp 10
     set max-hp hp
     set mana 1
@@ -1273,7 +1606,6 @@ to generate-hero
 
   ask heros [if ycor > 14 [set ycor 14]]
 end
-
 
 to generate-citizens [population]
 
@@ -1343,8 +1675,6 @@ ask one-of patches with [walkable? = true and pycor < 15] [
         ]
       ]
 end
-
-
 
 to generate-mob [mob-qty]
   let mob-chance 0
@@ -1458,6 +1788,11 @@ to generate-mob [mob-qty]
 
     ]
   ]
+
+  ;store color value for later use (sleep spell, etc)
+  ask mobs [
+    set mob-color color
+  ]
 end
 
 to build-house
@@ -1495,7 +1830,6 @@ to build-house
 
 end
 
-
 to move-citizens
 
   ask citizens [
@@ -1513,30 +1847,110 @@ end
 
 to move-mobs
   let has-attacked? false
+  let fireball-damage-factor [xp-level] of one-of heros
+  let fireball-damage (random (fireball-damage-factor * 6) + fireball-damage-factor)
 
+  ;things to do for all non-hero life forms
   ask mobs [
-
+    ;determine if mob should be visible
     ifelse [discovered? = true] of patch-here [set hidden? false][set hidden? true]
 
-    repeat [mob-speed] of self [
-      ifelse any? heros-on neighbors and [smoke-screen-timer <= ticks] of patch-here [
-        ;attack hero
-        if random 10 + 1 > 4 and has-attacked? = false [ ;only 1 attack per tick, regardless of mob-speed
-          battle self one-of heros 0 0
-          set has-attacked? true
-        ]
-      ][
-        ;move toward heros if they are close, otherwise move randomly
-        ifelse (any? heros in-radius 7) and (random 10 + 1 > 3) and [smoke-screen-timer <= ticks] of patch-here [set heading towards one-of heros][set heading random 360]
-        if (can-move? 1) and (not any? other mobs-on patch-ahead 1) and ([walkable? = true] of patch-ahead 1 or [magic-walk-thru-walls] of self = 1) and [pycor < 15] of patch-ahead 1 [fd 1]
-      ]
-      set xcor round xcor
-      set ycor round ycor
-      if [mob-speed] of self > 1 and [discovered? = true] of patch-here [wait 0.05]
+    ;check for fireball damage
+    if [fireball-timer] of patch-here > ticks [
+      set hp hp - (random (fireball-damage-factor * 6) + fireball-damage-factor)
+      ;some cool graphics
+      set size 5
+      set label-color white
+      set label fireball-damage
+      wait 0.5
+      set size 1
+      set label ""
+      check-for-death
     ]
   ]
-end
 
+  ;move the monsters
+  ask mobs with [master = 0] [
+    ;move mobs
+    ifelse sleep-timer <= ticks [
+      set color mob-color
+      set label ""
+      repeat [mob-speed] of self [
+        ifelse any? heros-on neighbors and [smoke-screen-timer <= ticks] of patch-here and master = 0 [
+          ;attack hero
+          if random 10 + 1 > 4 and has-attacked? = false [ ;only 1 attack per tick, regardless of mob-speed
+            battle self one-of heros 0 0
+            set has-attacked? true
+          ]
+        ][
+          ;move toward heros if they are close, otherwise move randomly
+          ifelse (any? heros in-radius 7) and (random 10 + 1 > 3) and [smoke-screen-timer <= ticks] of patch-here [set heading towards one-of heros][set heading random 360]
+          if (can-move? 1) and
+          (not any? other mobs-on patch-ahead 1) and
+          ([walkable? = true] of patch-ahead 1 or [magic-walk-thru-walls] of self = 1) and
+          ([fireball-timer <= ticks] of patch-ahead 1) and
+          [pycor < 15] of patch-ahead 1 [
+            fd 1
+          ]
+        ]
+        set xcor round xcor
+        set ycor round ycor
+        if [mob-speed] of self > 1 and [discovered? = true] of patch-here [wait 0.05]
+      ]
+    ][
+      set color grey
+      set label "zzzz"
+    ]
+  ]
+
+  ;move the mobs under hero's command
+  ask mobs with [master = one-of heros] [
+    ;move mobs
+    ifelse sleep-timer <= ticks [
+      set color mob-color
+      set label ""
+      repeat [mob-speed] of self [
+        ifelse any? (mobs-on neighbors) with [master = 0] and [smoke-screen-timer <= ticks] of patch-here [
+          ;attack monsters
+          ;only 1 attack per tick, regardless of mob-speed
+          battle self one-of (mobs-on neighbors) with [master = 0] 0 0
+          set has-attacked? true
+        ][
+
+          ;move toward heros if they are close, otherwise move randomly
+          ifelse (any? heros in-radius 7) and
+          not any? heros-here and
+          (random 10 + 1 > 3) and
+          [smoke-screen-timer <= ticks] of patch-here [
+            set heading towards one-of heros
+          ][
+            set heading random 360
+          ]
+
+          ;move forward
+          if (can-move? 1) and
+          (not any? other mobs-on patch-ahead 1) and
+          (not any? heros-on patch-ahead 1) and
+          ([walkable? = true] of patch-ahead 1 or [magic-walk-thru-walls] of self = 1) and
+          ([fireball-timer <= ticks] of patch-ahead 1) and
+          [pycor < 15] of patch-ahead 1 [
+            fd 1
+          ]
+        ]
+        set xcor round xcor
+        set ycor round ycor
+        if [mob-speed] of self > 1 and [discovered? = true] of patch-here [wait 0.05]
+      ]
+    ][
+      set color grey
+      set label "zzzz"
+    ]
+  ]
+
+
+
+
+end
 
 to generate-tunnel-level [name]
   clear-patches
@@ -1639,7 +2053,7 @@ to generate-tunnel-level [name]
   repeat number-of-items [
     ask one-of patches with [walkable? = true and pycor < 15] [
       set level name
-      drop-item self
+      drop-item self level
     ]
   ]
 
@@ -1963,7 +2377,6 @@ to shop-for-spells
 
 end
 
-
 to generate-surface-level
   clear-patches
   clear-turtles
@@ -2270,7 +2683,7 @@ to check-whats-here
         ]
 
         if drop-chance >= 51 and drop-chance <= 75 [
-          drop-item self
+          drop-item self level
         ]
       ]
 
@@ -2298,7 +2711,11 @@ to pickup-spellbook
       if xp-level <= 2 [set spell-chance random 3 + 1] ;level 1 spells
       if xp-level >= 3 and xp-level <= 4 [set spell-chance random 6 + 1] ; level 2 spells
       if xp-level >= 5 and xp-level <= 6 [set spell-chance random 9 + 1] ; level 3 spells
-      if xp-level >= 7 [set spell-chance random 12 + 1] ; level 4 spells
+      if xp-level >= 7 and xp-level <= 8 [set spell-chance random 12 + 1] ; level 4 spells
+      if xp-level >= 9  and xp-level <= 10 [set spell-chance random 15 + 1] ;level 5 spells
+      if xp-level >= 11 and xp-level <= 12 [set spell-chance random 18 + 1] ;level 6 spells
+      if xp-level >= 13 [set spell-chance random 21 + 1] ;level 7 spells
+
     ]
 
     ;level 1 spells
@@ -2393,18 +2810,85 @@ to pickup-spellbook
       ][print "You found nothing useful in the spellbook"]
     ]
 
+    ;level 5 spells
+    if spell-chance = 13 [
+      ifelse spell-sanctuary = 0 [
+        set spell-sanctuary 1
+        print "You learned the new spell - Sanctuary !"
+      ][print "You found nothing useful in the spellbook"]
+    ]
+
+    if spell-chance = 14 [
+      ifelse spell-drain-life = 0 [
+        set spell-drain-life 1
+        print "You learned the new spell - Drain Life !"
+      ][print "You found nothing useful in the spellbook"]
+    ]
+
+    if spell-chance = 15 [
+      ifelse spell-walk-through-walls = 0 [
+        set spell-walk-through-walls 1
+        print "You learned the new spell - Walk Through Walls !"
+      ][print "You found nothing useful in the spellbook"]
+    ]
+
+    ;level 6 spells
+    if spell-chance = 16 [
+      ifelse spell-fireball = 0 [
+        set spell-fireball 1
+        print "You learned the new spell - Fireball !"
+      ][print "You found nothing useful in the spellbook"]
+    ]
+
+
+    if spell-chance = 17 [
+      ifelse spell-sleep = 0 [
+        set spell-sleep 1
+        print "You learned the new spell - Sleep !"
+      ][print "You found nothing useful in the spellbook"]
+    ]
+
+
+    if spell-chance = 18 [
+      ifelse spell-teleport = 0 [
+        set spell-teleport 1
+        print "You learned the new spell - Teleport !"
+      ][print "You found nothing useful in the spellbook"]
+    ]
+
+    ;level 7 spells
+    if spell-chance = 19 [
+      ifelse spell-sphere-of-annihilation = 0 [
+        set spell-sphere-of-annihilation 1
+        print "You learned the new spell - Sphere of Annihilation !"
+      ][print "You found nothing useful in the spellbook"]
+    ]
+
+    if spell-chance = 20 [
+      ifelse spell-animate-dead = 0 [
+        set spell-animate-dead 1
+        print "You learned the new spell - Animate Dead !"
+      ][print "You found nothing useful in the spellbook"]
+    ]
+
+    if spell-chance = 21 [
+      ifelse spell-create-item = 0 [
+        set spell-create-item 1
+        print "You learned the new spell - Create Item !"
+      ][print "You found nothing useful in the spellbook"]
+    ]
+
     ask spellbooks-here [die]
   ]
 end
 
-
-to drop-item [patch-location]
+to drop-item [patch-location item-level]
   let item-chance 0
 
-  if level = 1 [set item-chance random 7 + 1] ; a random number to determine which item gets dropped
-  if level = 2 [set item-chance random 10 + 1]
-  if level = 3 [set item-chance random 13 + 1]
-  if level >= 4 [set item-chance random 14 + 1]
+  if item-level = 1 [set item-chance random 7 + 1] ; a random number to determine which item gets dropped
+  if item-level = 2 [set item-chance random 10 + 1]
+  if item-level = 3 [set item-chance random 13 + 1]
+  if item-level >= 4 [set item-chance random 14 + 1]
 
   ask patch-location [
     if item-chance = 1 [
@@ -3383,6 +3867,13 @@ dot
 false
 0
 Circle -7500403 true true 90 90 120
+
+drop
+false
+0
+Circle -7500403 true true 73 133 152
+Polygon -7500403 true true 219 181 205 152 185 120 174 95 163 64 156 37 149 7 147 166
+Polygon -7500403 true true 79 182 95 152 115 120 126 95 137 64 144 37 150 6 154 165
 
 face happy
 false
